@@ -1,9 +1,9 @@
 /**
  * services/service-container.js
  * 服務容器 (IoC Container)
- * * @version 7.5.2 (Enable Announcement SQL)
+ * * @version 7.5.3 (Fix: EventLog DI & Interaction Protection)
  * @date 2026-02-02
- * @description [Update] 注入 AnnouncementSqlReader 至 AnnouncementService，準備進入 Phase 6-2。
+ * @description [Closure Fix] 補齊 EventLogSqlReader 注入，完成 Phase 6-2 架構一致性。
  */
 
 const config = require('../config');
@@ -22,6 +22,7 @@ const OpportunitySqlReader = require('../data/opportunity-sql-reader'); // [Adde
 const InteractionReader = require('../data/interaction-reader');
 const InteractionSqlReader = require('../data/interaction-sql-reader'); // [Added] Phase 6-2
 const EventLogReader = require('../data/event-log-reader');
+const EventLogSqlReader = require('../data/event-log-sql-reader'); // [Added] Phase 6-2 Fix: Inject SQL Reader
 const SystemReader = require('../data/system-reader');
 const WeeklyBusinessReader = require('../data/weekly-business-reader');
 const WeeklyBusinessSqlReader = require('../data/weekly-business-sql-reader'); // [Added] Phase 6-2 Fix
@@ -74,7 +75,7 @@ let services = null;
 async function initializeServices() {
     if (services) return services;
 
-    console.log('🚀 [System] 正在初始化 Service Container (v7.5.2 Announcement SQL)...');
+    console.log('🚀 [System] 正在初始化 Service Container (v7.5.3 Phase 6-2 Closure)...');
 
     try {
         // 1. Infrastructure
@@ -93,6 +94,7 @@ async function initializeServices() {
         const interactionReader = new InteractionReader(sheets, config.IDS.CORE);
         const interactionSqlReader = new InteractionSqlReader(); // [Added] Phase 6-2
         const eventLogReader = new EventLogReader(sheets, config.IDS.CORE);
+        const eventLogSqlReader = new EventLogSqlReader(); // [Added] Phase 6-2 Fix
         const weeklyReader = new WeeklyBusinessReader(sheets, config.IDS.CORE);
         const weeklySqlReader = new WeeklyBusinessSqlReader(); // [Added] Phase 6-2 Fix
         const announcementReader = new AnnouncementReader(sheets, config.IDS.CORE);
@@ -156,7 +158,16 @@ async function initializeServices() {
             interactionSqlReader
         );
         
-        const eventLogService = new EventLogService(eventLogReader, eventLogWriter, opportunityReader, companyReader, systemReader, calendarService);
+        // [Fix] Inject eventLogSqlReader (7th arg)
+        const eventLogService = new EventLogService(
+            eventLogReader, 
+            eventLogWriter, 
+            opportunityReader, 
+            companyReader, 
+            systemReader, 
+            calendarService,
+            eventLogSqlReader // [Added] Dependency Injection
+        );
         
         const weeklyBusinessService = new WeeklyBusinessService({
             weeklyBusinessReader: weeklyReader,

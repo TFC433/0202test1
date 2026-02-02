@@ -1,30 +1,34 @@
 /**
  * services/event-log-service.js
  * 事件紀錄服務邏輯
- * @version 5.2.0 (Phase 5 - SQL Reader Fallback Injection)
- * @date 2026-01-29
+ * @version 5.2.1 (Phase 6-2 - DI Fix)
+ * @date 2026-02-02
  * @description
  * [Standard A] Join 邏輯集中在 Service；所有回傳物件皆 clone，避免污染 Reader Cache。
  * [Hotfix] 當 eventType 變更時，rowIndex 不可跨 sheet update，必須 delete + create (Move)。
  * [Fix] deleteEventLog: 修正 Controller 呼叫斷裂，新增 eventId 解析邏輯。
- * [Test] 注入 EventLogSqlReader 供讀取測試，失敗時 Fallback 至 Sheet Reader。
- * 依賴注入：EventLogReader, EventLogWriter, OpportunityReader, CompanyReader, SystemReader, CalendarService
+ * [DI Fix] 移除內部 require，改由 Service Container 注入 SqlReader。
+ * 依賴注入：EventLogReader, EventLogWriter, OpportunityReader, CompanyReader, SystemReader, CalendarService, EventLogSqlReader
  */
 
-// [Patch] 引入 SQL Reader 供測試期雙軌並行
-const EventLogSqlReader = require('../data/event-log-sql-reader');
-
 class EventLogService {
-    constructor(eventReader, eventWriter, oppReader, companyReader, systemReader, calendarService) {
+    /**
+     * @param {EventLogReader} eventReader 
+     * @param {EventLogWriter} eventWriter 
+     * @param {OpportunityReader} oppReader 
+     * @param {CompanyReader} companyReader 
+     * @param {SystemReader} systemReader 
+     * @param {CalendarService} calendarService 
+     * @param {EventLogSqlReader} [eventLogSqlReader] - Injected SQL Reader
+     */
+    constructor(eventReader, eventWriter, oppReader, companyReader, systemReader, calendarService, eventLogSqlReader) {
         this.eventReader = eventReader;
         this.eventWriter = eventWriter;
         this.oppReader = oppReader;
         this.companyReader = companyReader;
         this.systemReader = systemReader;
         this.calendarService = calendarService;
-
-        // [Patch] 測試期硬性注入 SQL Reader (不經由 DI Container)
-        this.sqlReader = new EventLogSqlReader();
+        this.eventLogSqlReader = eventLogSqlReader; // [Fix] DI Injection
     }
 
     _invalidateEventCacheSafe() {
@@ -42,19 +46,22 @@ class EventLogService {
 
     async getAllEvents() {
         try {
-            // [Patch Start] SQL Read Priority with Fallback
+            // [SQL Read Priority with Fallback]
             let events;
             try {
-                events = await this.sqlReader.getEventLogs();
-                // 簡易驗證：若 SQL 回傳非陣列或 null，視為失敗
-                if (!Array.isArray(events)) throw new Error('SQL returned invalid structure');
-                console.log('[EventLogService] getAllEvents: Serving from SQL Reader');
+                if (this.eventLogSqlReader) {
+                    events = await this.eventLogSqlReader.getEventLogs();
+                    // 簡易驗證：若 SQL 回傳非陣列或 null，視為失敗
+                    if (!Array.isArray(events)) throw new Error('SQL returned invalid structure');
+                    console.log('[EventLogService] getAllEvents: Serving from SQL Reader');
+                } else {
+                    throw new Error('SQL Reader not injected');
+                }
             } catch (sqlError) {
-                console.error('[EventLogService] getAllEvents: SQL Read Failed, fallback to Sheet.', sqlError.message);
+                console.warn('[EventLogService] getAllEvents: SQL Read Failed, fallback to Sheet.', sqlError.message);
                 // Fallback: 使用原本的 Sheet Reader
                 events = await this.eventReader.getEventLogs();
             }
-            // [Patch End]
 
             // [Modified] 將原本 Promise.all 中的 getEventLogs 移除，因為 events 已在上方取得
             const [opps, comps] = await Promise.all([
@@ -84,18 +91,21 @@ class EventLogService {
 
     async getEventById(eventId) {
         try {
-            // [Patch Start] SQL Read Priority with Fallback
+            // [SQL Read Priority with Fallback]
             let rawEvent;
             try {
-                rawEvent = await this.sqlReader.getEventLogById(eventId);
-                if (!rawEvent) throw new Error(`Event ${eventId} not found in SQL`);
-                console.log(`[EventLogService] getEventById: Serving ${eventId} from SQL Reader`);
+                if (this.eventLogSqlReader) {
+                    rawEvent = await this.eventLogSqlReader.getEventLogById(eventId);
+                    if (!rawEvent) throw new Error(`Event ${eventId} not found in SQL`);
+                    console.log(`[EventLogService] getEventById: Serving ${eventId} from SQL Reader`);
+                } else {
+                    throw new Error('SQL Reader not injected');
+                }
             } catch (sqlError) {
-                console.error(`[EventLogService] getEventById: SQL Read Failed for ${eventId}, fallback to Sheet.`, sqlError.message);
+                console.warn(`[EventLogService] getEventById: SQL Read Failed for ${eventId}, fallback to Sheet.`, sqlError.message);
                 // Fallback: 使用原本的 Sheet Reader
                 rawEvent = await this.eventReader.getEventLogById(eventId);
             }
-            // [Patch End]
 
             if (!rawEvent) return null;
 
