@@ -1,24 +1,57 @@
-/* [v7.0.2] Standard A Refactor */
+/* [v7.2.0] Announcement Service SQL-Enabled */
 /**
  * services/announcement-service.js
  * 布告欄業務邏輯層
- * * @version 7.0.0 (Standard A Refactor)
- * @date 2026-01-23
+ * * @version 7.2.0 (SQL First Read Enabled)
+ * @date 2026-02-02
  * @description 
- * 1. 承接原 Reader 的排序邏輯 (置頂優先 + 時間倒序)。
- * 2. 負責業務過濾 (狀態檢查)。
+ * [SQL-Ready Refactor]
+ * 1. 啟用 SQL First Read (_fetchInternal)。
+ * 2. 實作 Sheet Fallback 機制。
+ * 3. 維持 Write rowIndex 保護，確保 SQL 資料不誤入寫入流程。
  */
 
 class AnnouncementService {
     /**
      * @param {Object} dependencies
      * @param {AnnouncementReader} dependencies.announcementReader
+     * @param {AnnouncementSqlReader} dependencies.announcementSqlReader [New]
      * @param {AnnouncementWriter} dependencies.announcementWriter
      */
-    constructor({ announcementReader, announcementWriter }) {
+    constructor({ announcementReader, announcementSqlReader, announcementWriter }) {
         this.announcementReader = announcementReader;
+        this.announcementSqlReader = announcementSqlReader; // [New] Inject SQL Reader
         this.announcementWriter = announcementWriter;
     }
+
+    // ============================================================
+    //  Internal Accessor (Read Convergence)
+    // ============================================================
+
+    /**
+     * [Internal] 唯一資料讀取收斂點
+     * 實作 SQL First -> Sheet Fallback 策略
+     * @returns {Promise<Array>} Raw Announcement Data
+     */
+    async _fetchInternal() {
+        // [SQL First Path]
+        try {
+            if (this.announcementSqlReader) {
+                // 直接回傳 DTO (資料契約已由 Reader 層對齊)
+                return await this.announcementSqlReader.getAnnouncements();
+            }
+        } catch (error) {
+            console.warn(`[AnnouncementService] SQL Read Failed, falling back to Sheet: ${error.message}`);
+            // Fallback continues below...
+        }
+
+        // [Sheet Fallback Path]
+        return this.announcementReader.getAnnouncements();
+    }
+
+    // ============================================================
+    //  Public Methods
+    // ============================================================
 
     /**
      * 取得所有已發布公告 (含置頂排序)
@@ -26,13 +59,13 @@ class AnnouncementService {
      */
     async getAnnouncements() {
         try {
-            // 1. 取得 Raw Data
-            let data = await this.announcementReader.getAnnouncements();
+            // 1. 取得 Raw Data (透過收斂點)
+            let data = await this._fetchInternal();
             
             // 2. 業務過濾：僅顯示已發布
             data = data.filter(item => item.status === '已發布');
 
-            // 3. [Moved from Reader] 業務排序：置頂優先 > 最後更新時間
+            // 3. 業務排序：置頂優先 > 最後更新時間
             data.sort((a, b) => {
                 // 置頂判斷
                 if (a.isPinned && !b.isPinned) return -1;
@@ -83,12 +116,17 @@ class AnnouncementService {
         try {
             const modifierName = user.displayName || user.username || user.name || 'System';
 
-            // 1. 查找公告以獲取 rowIndex (Reader 已快取，效能無虞)
-            const allAnnouncements = await this.announcementReader.getAnnouncements();
+            // 1. 查找公告 (透過收斂點)
+            const allAnnouncements = await this._fetchInternal();
             const target = allAnnouncements.find(a => a.id === id);
 
             if (!target) {
                 throw new Error(`找不到公告 ID: ${id}`);
+            }
+
+            // [Write Protection] 確保資料來源支援 rowIndex (Sheet Only)
+            if (!target.rowIndex) {
+                throw new Error('[Forbidden] 無法更新 SQL 來源的資料 (Missing rowIndex)。請切換回 Sheet 模式或聯絡管理員。');
             }
 
             const rowIndex = target.rowIndex;
@@ -107,12 +145,17 @@ class AnnouncementService {
      */
     async deleteAnnouncement(id) {
         try {
-            // 1. 查找公告以獲取 rowIndex
-            const allAnnouncements = await this.announcementReader.getAnnouncements();
+            // 1. 查找公告 (透過收斂點)
+            const allAnnouncements = await this._fetchInternal();
             const target = allAnnouncements.find(a => a.id === id);
 
             if (!target) {
                 throw new Error(`找不到公告 ID: ${id}`);
+            }
+
+            // [Write Protection] 確保資料來源支援 rowIndex (Sheet Only)
+            if (!target.rowIndex) {
+                throw new Error('[Forbidden] 無法刪除 SQL 來源的資料 (Missing rowIndex)。請切換回 Sheet 模式或聯絡管理員。');
             }
 
             const rowIndex = target.rowIndex;

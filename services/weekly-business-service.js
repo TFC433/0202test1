@@ -1,21 +1,24 @@
-/* [v7.0.4] Weekly Standard A + S Final Polish */
+/* [v7.2.0] Weekly Service SQL-Bridge */
 /**
  * services/weekly-business-service.js
  * 週間業務邏輯服務 (Service Layer)
- * * @version 7.0.1 (Standard A + S Final)
- * @date 2026-01-23
+ * * @version 7.2.0 (SQL Read Enable)
+ * @date 2026-02-02
  * @description 
- * [Final Polish]
- * 1. deleteWeeklyBusinessEntry 介面修正 (移除 rowIndex 參數)。
- * 2. getEntriesForWeek 增加明確的 View-only 欄位標記。
+ * [SQL-Ready Refactor]
+ * 1. 實作 SQL First Read 與 Fallback 機制 (_fetchInternal)。
+ * 2. 實作雙重資料形狀適配 (Sheet/SQL) 與 View 契約對齊 (_normalizeEntry)。
+ * 3. 實作 Write 保護機制，防止無 rowIndex 的 SQL 資料誤入寫入流程。
  */
 
 class WeeklyBusinessService {
     /**
      * 透過 Service Container 注入依賴
+     * [Refactor] 新增 weeklyBusinessSqlReader 注入
      */
     constructor({ 
         weeklyBusinessReader, 
+        weeklyBusinessSqlReader, // [New] SQL Reader
         weeklyBusinessWriter, 
         dateHelpers, 
         calendarService, 
@@ -24,6 +27,7 @@ class WeeklyBusinessService {
         config 
     }) {
         this.weeklyBusinessReader = weeklyBusinessReader;
+        this.weeklyBusinessSqlReader = weeklyBusinessSqlReader; // [New]
         this.weeklyBusinessWriter = weeklyBusinessWriter;
         this.dateHelpers = dateHelpers;
         this.calendarService = calendarService;
@@ -32,30 +36,124 @@ class WeeklyBusinessService {
         this.config = config;
     }
 
+    // ============================================================
+    //  Internal Accessor (Read Convergence & View Normalization)
+    // ============================================================
+
+    /**
+     * [Internal] 唯一資料讀取收斂點
+     * 實作 SQL First -> Sheet Fallback 策略
+     * @param {string} mode - 'ENTRIES' | 'SUMMARY'
+     * @returns {Promise<Array>} Normalized View Objects or Summary
+     */
+    async _fetchInternal(mode) {
+        // 策略：嘗試使用 SQL Reader，若失敗則回退至 Sheet Reader
+        try {
+            if (this.weeklyBusinessSqlReader) {
+                // [SQL First Path]
+                if (mode === 'SUMMARY' || mode === 'ENTRIES') {
+                     // SQL Reader 統一使用 getWeeklyBusinessEntries (DTO 包含 summaryContent)
+                     const sqlEntries = await this.weeklyBusinessSqlReader.getWeeklyBusinessEntries();
+                     
+                     if (mode === 'SUMMARY') {
+                         return sqlEntries; // SQL DTO 已包含 weekId, summaryContent
+                     }
+                     
+                     // Mode ENTRIES: 進行正規化
+                     return sqlEntries.map(entry => this._normalizeEntry(entry));
+                }
+            }
+        } catch (error) {
+            console.warn(`[WeeklyService] SQL Read Failed, falling back to Sheet: ${error.message}`);
+            // Fallback continues below...
+        }
+
+        // [Sheet Fallback Path]
+        if (mode === 'SUMMARY') {
+            return this.weeklyBusinessReader.getWeeklySummary();
+        }
+
+        if (mode === 'ENTRIES') {
+            const rawEntries = await this.weeklyBusinessReader.getAllEntries();
+            return rawEntries.map(entry => this._normalizeEntry(entry));
+        }
+
+        return [];
+    }
+
+    /**
+     * [Internal] View Object 正規化 & 契約橋接
+     * 支援 Sheet (中文鍵) 與 SQL (英文鍵) 雙重輸入
+     */
+    _normalizeEntry(raw) {
+        // 判定來源：若有 '日期' 則為 Sheet，否則嘗試適配 SQL DTO
+        const isSheet = raw['日期'] !== undefined;
+        
+        // 1. 提取統一的內部邏輯欄位 (Service Logic)
+        const date = isSheet ? raw['日期'] : raw.entryDate;
+        const weekId = raw.weekId; // 兩者皆有
+        const recordId = raw.recordId; // 兩者皆有 (SQL: recordId, Sheet: recordId)
+        const rowIndex = isSheet ? raw.rowIndex : undefined; // SQL 無 rowIndex
+
+        // 2. 構建對外契約 (View Contract)
+        // 若為 SQL 來源，必須補齊前端依賴的中文鍵名 (API Shape Stability)
+        let viewContract = {};
+        if (isSheet) {
+            viewContract = { ...raw };
+        } else {
+            // SQL DTO -> Sheet View Mapping
+            viewContract = {
+                ...raw,
+                '日期': raw.entryDate || '',
+                'weekId': raw.weekId || '',
+                'category': raw.category || '',
+                '主題': raw.topic || '',
+                '參與人員': raw.participants || '',
+                '重點摘要': raw.summaryContent || '',
+                '待辦事項': raw.todoItems || '',
+                'createdTime': raw.createdTime || '',
+                'lastUpdateTime': raw.updatedTime || '', // Map updatedTime -> lastUpdateTime
+                '建立者': raw.createdBy || '',
+                'recordId': raw.recordId || ''
+            };
+        }
+
+        return {
+            ...viewContract, // [Contract] 確保對外欄位一致
+            
+            // [View Object] Service 內部邏輯專用
+            date: date,
+            weekId: weekId,
+            recordId: recordId,
+            rowIndex: rowIndex // [Critical] 用於寫入保護檢查
+        };
+    }
+
+    // ============================================================
+    //  Public Methods
+    // ============================================================
+
     /**
      * 獲取特定週次的所有條目
-     * [View-Only] 負責 Filter, Sort, Day Calculation
-     * @param {string} weekId - 週次 ID (e.g., "2026-W03")
      */
     async getEntriesForWeek(weekId) {
         try {
-            // 1. 取得全量資料 (Raw)
-            const allEntries = await this.weeklyBusinessReader.getAllEntries();
+            // 1. 取得全量資料 (SQL First or Fallback)
+            const allEntries = await this._fetchInternal('ENTRIES');
             
             // 2. Filter by weekId
             let entries = allEntries.filter(entry => entry.weekId === weekId);
             
             // 3. Sort by Date (Desc)
-            entries.sort((a, b) => new Date(b['日期']) - new Date(a['日期']));
+            entries.sort((a, b) => new Date(b.date) - new Date(a.date));
 
-            // 4. Calculate 'day' (View-Only Field)
+            // 4. Calculate 'day'
             entries = entries.map(entry => {
                 let dayValue = -1;
                 try {
-                    const dateString = entry['日期'];
-                    if (/^\d{4}-\d{2}-\d{2}$/.test(dateString)) {
+                    const dateString = entry.date;
+                    if (dateString && /^\d{4}-\d{2}-\d{2}$/.test(dateString)) {
                         const [year, month, day] = dateString.split('-').map(Number);
-                        // 使用 UTC 避免時區偏差導致週幾計算錯誤
                         const entryDateUTC = new Date(Date.UTC(year, month - 1, day));
                         if (!isNaN(entryDateUTC.getTime())) {
                             dayValue = entryDateUTC.getUTCDay();
@@ -67,9 +165,7 @@ class WeeklyBusinessService {
 
                 return {
                     ...entry,
-                    // [Backward Compatibility] 前端既有邏輯依賴 entry.day
                     day: dayValue,
-                    // [Standard A+S] 明確的 View-only 結構標記
                     _view: { day: dayValue }
                 };
             });
@@ -86,16 +182,22 @@ class WeeklyBusinessService {
      */
     async getWeeklyBusinessSummaryList() {
         try {
-            const rawData = await this.weeklyBusinessReader.getWeeklySummary();
+            // 透過收斂點取得 Summary (SQL DTO or Sheet Raw)
+            // SQL DTO 也有 weekId, summaryContent，因此通用
+            const rawData = await this._fetchInternal('SUMMARY');
             
             const weekSummaryMap = new Map();
             rawData.forEach(item => {
-                const { weekId, summaryContent } = item;
+                const { weekId } = item;
+                // 適配欄位：Sheet 用 summaryContent, SQL DTO 用 summaryContent (或需從 mapRowToDto 確認)
+                // 假設 SQL Reader DTO 已經 normalize 成 camelCase 'summaryContent'
+                const content = item.summaryContent || item['重點摘要'];
+
                 if (weekId && /^\d{4}-W\d{2}$/.test(weekId)) {
                     if (!weekSummaryMap.has(weekId)) {
                         weekSummaryMap.set(weekId, { weekId: weekId, summaryCount: 0 });
                     }
-                    if (summaryContent && summaryContent.trim() !== '') {
+                    if (content && content.trim() !== '') {
                         weekSummaryMap.get(weekId).summaryCount++;
                     }
                 }
@@ -114,7 +216,6 @@ class WeeklyBusinessService {
                 };
             });
 
-            // UX 優化：確保「本週」總是存在
             const today = new Date();
             const currentWeekId = this.dateHelpers.getWeekId(today);
             const currentWeekInfo = this.dateHelpers.getWeekInfo(currentWeekId);
@@ -138,14 +239,13 @@ class WeeklyBusinessService {
     }
 
     /**
-     * 獲取單週詳細資料 (包含日曆過濾邏輯)
+     * 獲取單週詳細資料
      */
     async getWeeklyDetails(weekId, userId = null) {
         const weekInfo = this.dateHelpers.getWeekInfo(weekId);
         
         let entriesForWeek = await this.getEntriesForWeek(weekId);
         
-        // 日曆與系統設定讀取
         const firstDay = new Date(weekInfo.days[0].date + 'T00:00:00'); 
         const lastDay = new Date(weekInfo.days[weekInfo.days.length - 1].date + 'T00:00:00'); 
         const endQueryDate = new Date(lastDay.getTime() + 24 * 60 * 60 * 1000); 
@@ -177,7 +277,6 @@ class WeeklyBusinessService {
         const rawDxEvents = results[2] || []; 
         const rawAtEvents = results[3] || [];
 
-        // 關鍵字過濾邏輯
         const rules = systemConfig['日曆篩選規則'] || [];
         const dxBlockRule = rules.find(r => r.value === 'DX_屏蔽關鍵字');
         const dxBlockKeywords = (dxBlockRule ? dxBlockRule.note : '').split(',').map(s => s.trim()).filter(Boolean);
@@ -244,14 +343,14 @@ class WeeklyBusinessService {
     }
 
     /**
-     * 獲取週次選項 (下拉選單)
+     * 獲取週次選項
      */
     async getWeekOptions() {
         const today = new Date();
         const prevWeek = new Date(today.getTime() - 7 * 24 * 60 * 60 * 1000);
         const nextWeek = new Date(today.getTime() + 7 * 24 * 60 * 60 * 1000);
 
-        const summaryData = await this.weeklyBusinessReader.getWeeklySummary();
+        const summaryData = await this._fetchInternal('SUMMARY');
         const existingWeekIds = new Set(summaryData.map(w => w.weekId));
 
         const options = [
@@ -285,16 +384,20 @@ class WeeklyBusinessService {
 
     /**
      * 更新週報
-     * [Flow Control] Lookup ID via Service -> Pure Write
      */
     async updateWeeklyBusinessEntry(recordId, data) {
         try {
-            // 1. Service Lookup (Simulate SQL Where)
-            const allEntries = await this.weeklyBusinessReader.getAllEntries();
+            // 1. Service Lookup
+            const allEntries = await this._fetchInternal('ENTRIES');
             const target = allEntries.find(e => e.recordId === recordId);
             
             if (!target) {
                 throw new Error(`找不到紀錄 ID: ${recordId}`);
+            }
+
+            // [Write Protection] 確保資料來源支援 rowIndex (Sheet Only)
+            if (!target.rowIndex) {
+                throw new Error('[Forbidden] 無法更新 SQL 來源的資料 (Missing rowIndex)。請切換回 Sheet 模式或聯絡管理員。');
             }
 
             // 2. Pure Write
@@ -308,20 +411,23 @@ class WeeklyBusinessService {
 
     /**
      * 刪除週報
-     * [Fix 1] 移除 rowIndex 參數，改由 Service 內部查找
-     * [Flow Control] Lookup ID via Service -> Pure Write
      */
     async deleteWeeklyBusinessEntry(recordId) {
         try {
             // 1. Service Lookup
-            const allEntries = await this.weeklyBusinessReader.getAllEntries();
+            const allEntries = await this._fetchInternal('ENTRIES');
             const target = allEntries.find(e => e.recordId === recordId);
             
             if (!target) {
                 throw new Error(`找不到紀錄 ID: ${recordId}`);
             }
 
-            // 2. Pure Write (傳遞 rowIndex 給 Writer)
+            // [Write Protection] 確保資料來源支援 rowIndex (Sheet Only)
+            if (!target.rowIndex) {
+                throw new Error('[Forbidden] 無法刪除 SQL 來源的資料 (Missing rowIndex)。請切換回 Sheet 模式或聯絡管理員。');
+            }
+
+            // 2. Pure Write
             return await this.weeklyBusinessWriter.deleteEntryRow(target.rowIndex);
         } catch (error) {
             console.error('[WeeklyService] deleteWeeklyBusinessEntry Error:', error);
