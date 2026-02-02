@@ -85,7 +85,7 @@ async function initializeServices() {
         const calendar = await googleClientService.getCalendarClient();
 
         // 2. Readers
-        const contactReader = new ContactReader(sheets, config.IDS.CORE);
+        const contactReader = new ContactReader(sheets, config.IDS.RAW);
         const contactSqlReader = new ContactSqlReader(); // [Added] Phase 6-2
         const companyReader = new CompanyReader(sheets, config.IDS.CORE);
         const companySqlReader = new CompanySqlReader(); // [Added] Phase 6-2
@@ -103,7 +103,7 @@ async function initializeServices() {
         const productReader = new ProductReader(sheets, config.IDS.PRODUCT);
 
         // 3. Writers
-        const contactWriter = new ContactWriter(sheets, config.IDS.CORE, contactReader);
+        const contactWriter = new ContactWriter(sheets, config.IDS.RAW, contactReader);
         const companyWriter = new CompanyWriter(sheets, config.IDS.CORE, companyReader);
         const opportunityWriter = new OpportunityWriter(sheets, config.IDS.CORE, opportunityReader, contactReader);
         const interactionWriter = new InteractionWriter(sheets, config.IDS.CORE, interactionReader);
