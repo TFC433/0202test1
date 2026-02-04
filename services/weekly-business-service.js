@@ -1,25 +1,21 @@
-/* [v7.2.0] Weekly Service SQL-Bridge */
+/* [v7.8.0] Weekly Service Phase 7-3 */
 /**
  * services/weekly-business-service.js
  * 週間業務邏輯服務 (Service Layer)
- * * @version 7.2.0 (SQL Read Enable)
- * @date 2026-02-02
+ * * @version 7.8.0 (Phase 7-3: Sheet Retirement)
  * @description 
- * [SQL-Ready Refactor]
- * 1. 實作 SQL First Read 與 Fallback 機制 (_fetchInternal)。
- * 2. 實作雙重資料形狀適配 (Sheet/SQL) 與 View 契約對齊 (_normalizeEntry)。
- * 3. 實作 Write 保護機制，防止無 rowIndex 的 SQL 資料誤入寫入流程。
+ * [Phase 7-3 Refactor]
+ * 1. Removed WeeklyBusinessWriter dependency entirely.
+ * 2. Create/Update/Delete -> Strict SQL Only.
+ * 3. Read -> SQL First + Sheet Fallback (Read-Only).
  */
 
 class WeeklyBusinessService {
-    /**
-     * 透過 Service Container 注入依賴
-     * [Refactor] 新增 weeklyBusinessSqlReader 注入
-     */
     constructor({ 
         weeklyBusinessReader, 
-        weeklyBusinessSqlReader, // [New] SQL Reader
-        weeklyBusinessWriter, 
+        weeklyBusinessSqlReader, 
+        // weeklyBusinessWriter, // [Removed Phase 7-3]
+        weeklyBusinessSqlWriter,
         dateHelpers, 
         calendarService, 
         systemReader,
@@ -27,8 +23,9 @@ class WeeklyBusinessService {
         config 
     }) {
         this.weeklyBusinessReader = weeklyBusinessReader;
-        this.weeklyBusinessSqlReader = weeklyBusinessSqlReader; // [New]
-        this.weeklyBusinessWriter = weeklyBusinessWriter;
+        this.weeklyBusinessSqlReader = weeklyBusinessSqlReader;
+        // this.weeklyBusinessWriter = weeklyBusinessWriter; // [Removed Phase 7-3]
+        this.weeklyBusinessSqlWriter = weeklyBusinessSqlWriter;
         this.dateHelpers = dateHelpers;
         this.calendarService = calendarService;
         this.systemReader = systemReader;
@@ -40,35 +37,22 @@ class WeeklyBusinessService {
     //  Internal Accessor (Read Convergence & View Normalization)
     // ============================================================
 
-    /**
-     * [Internal] 唯一資料讀取收斂點
-     * 實作 SQL First -> Sheet Fallback 策略
-     * @param {string} mode - 'ENTRIES' | 'SUMMARY'
-     * @returns {Promise<Array>} Normalized View Objects or Summary
-     */
     async _fetchInternal(mode) {
-        // 策略：嘗試使用 SQL Reader，若失敗則回退至 Sheet Reader
         try {
             if (this.weeklyBusinessSqlReader) {
-                // [SQL First Path]
                 if (mode === 'SUMMARY' || mode === 'ENTRIES') {
-                     // SQL Reader 統一使用 getWeeklyBusinessEntries (DTO 包含 summaryContent)
                      const sqlEntries = await this.weeklyBusinessSqlReader.getWeeklyBusinessEntries();
                      
                      if (mode === 'SUMMARY') {
-                         return sqlEntries; // SQL DTO 已包含 weekId, summaryContent
+                         return sqlEntries;
                      }
-                     
-                     // Mode ENTRIES: 進行正規化
                      return sqlEntries.map(entry => this._normalizeEntry(entry));
                 }
             }
         } catch (error) {
             console.warn(`[WeeklyService] SQL Read Failed, falling back to Sheet: ${error.message}`);
-            // Fallback continues below...
         }
 
-        // [Sheet Fallback Path]
         if (mode === 'SUMMARY') {
             return this.weeklyBusinessReader.getWeeklySummary();
         }
@@ -81,27 +65,18 @@ class WeeklyBusinessService {
         return [];
     }
 
-    /**
-     * [Internal] View Object 正規化 & 契約橋接
-     * 支援 Sheet (中文鍵) 與 SQL (英文鍵) 雙重輸入
-     */
     _normalizeEntry(raw) {
-        // 判定來源：若有 '日期' 則為 Sheet，否則嘗試適配 SQL DTO
         const isSheet = raw['日期'] !== undefined;
         
-        // 1. 提取統一的內部邏輯欄位 (Service Logic)
         const date = isSheet ? raw['日期'] : raw.entryDate;
-        const weekId = raw.weekId; // 兩者皆有
-        const recordId = raw.recordId; // 兩者皆有 (SQL: recordId, Sheet: recordId)
-        const rowIndex = isSheet ? raw.rowIndex : undefined; // SQL 無 rowIndex
+        const weekId = raw.weekId;
+        const recordId = raw.recordId;
+        const rowIndex = isSheet ? raw.rowIndex : undefined;
 
-        // 2. 構建對外契約 (View Contract)
-        // 若為 SQL 來源，必須補齊前端依賴的中文鍵名 (API Shape Stability)
         let viewContract = {};
         if (isSheet) {
             viewContract = { ...raw };
         } else {
-            // SQL DTO -> Sheet View Mapping
             viewContract = {
                 ...raw,
                 '日期': raw.entryDate || '',
@@ -112,20 +87,18 @@ class WeeklyBusinessService {
                 '重點摘要': raw.summaryContent || '',
                 '待辦事項': raw.todoItems || '',
                 'createdTime': raw.createdTime || '',
-                'lastUpdateTime': raw.updatedTime || '', // Map updatedTime -> lastUpdateTime
+                'lastUpdateTime': raw.updatedTime || '',
                 '建立者': raw.createdBy || '',
                 'recordId': raw.recordId || ''
             };
         }
 
         return {
-            ...viewContract, // [Contract] 確保對外欄位一致
-            
-            // [View Object] Service 內部邏輯專用
+            ...viewContract,
             date: date,
             weekId: weekId,
             recordId: recordId,
-            rowIndex: rowIndex // [Critical] 用於寫入保護檢查
+            rowIndex: rowIndex
         };
     }
 
@@ -133,21 +106,12 @@ class WeeklyBusinessService {
     //  Public Methods
     // ============================================================
 
-    /**
-     * 獲取特定週次的所有條目
-     */
     async getEntriesForWeek(weekId) {
         try {
-            // 1. 取得全量資料 (SQL First or Fallback)
             const allEntries = await this._fetchInternal('ENTRIES');
-            
-            // 2. Filter by weekId
             let entries = allEntries.filter(entry => entry.weekId === weekId);
-            
-            // 3. Sort by Date (Desc)
             entries.sort((a, b) => new Date(b.date) - new Date(a.date));
 
-            // 4. Calculate 'day'
             entries = entries.map(entry => {
                 let dayValue = -1;
                 try {
@@ -177,20 +141,13 @@ class WeeklyBusinessService {
         }
     }
 
-    /**
-     * 獲取週報列表摘要
-     */
     async getWeeklyBusinessSummaryList() {
         try {
-            // 透過收斂點取得 Summary (SQL DTO or Sheet Raw)
-            // SQL DTO 也有 weekId, summaryContent，因此通用
             const rawData = await this._fetchInternal('SUMMARY');
             
             const weekSummaryMap = new Map();
             rawData.forEach(item => {
                 const { weekId } = item;
-                // 適配欄位：Sheet 用 summaryContent, SQL DTO 用 summaryContent (或需從 mapRowToDto 確認)
-                // 假設 SQL Reader DTO 已經 normalize 成 camelCase 'summaryContent'
                 const content = item.summaryContent || item['重點摘要'];
 
                 if (weekId && /^\d{4}-W\d{2}$/.test(weekId)) {
@@ -238,9 +195,6 @@ class WeeklyBusinessService {
         }
     }
 
-    /**
-     * 獲取單週詳細資料
-     */
     async getWeeklyDetails(weekId, userId = null) {
         const weekInfo = this.dateHelpers.getWeekInfo(weekId);
         
@@ -342,9 +296,6 @@ class WeeklyBusinessService {
         };
     }
 
-    /**
-     * 獲取週次選項
-     */
     async getWeekOptions() {
         const today = new Date();
         const prevWeek = new Date(today.getTime() - 7 * 24 * 60 * 60 * 1000);
@@ -367,7 +318,8 @@ class WeeklyBusinessService {
     }
 
     /**
-     * 建立週報
+     * [Phase 7-3] Create -> SQL Only (Strict)
+     * Removed Sheet Writer fallback.
      */
     async createWeeklyBusinessEntry(data) {
         const entryDate = new Date(data.date || new Date());
@@ -379,30 +331,27 @@ class WeeklyBusinessService {
         };
         
         const creator = data.creator || 'System';
-        return this.weeklyBusinessWriter.createEntry(fullData, creator);
+
+        if (!this.weeklyBusinessSqlWriter) {
+            throw new Error('[WeeklyService] WeeklyBusinessSqlWriter not configured. Create failed.');
+        }
+
+        return this.weeklyBusinessSqlWriter.createEntry(fullData, creator);
     }
 
     /**
-     * 更新週報
+     * [Phase 7-3] Update -> SQL Only (Strict)
      */
     async updateWeeklyBusinessEntry(recordId, data) {
         try {
-            // 1. Service Lookup
-            const allEntries = await this._fetchInternal('ENTRIES');
-            const target = allEntries.find(e => e.recordId === recordId);
-            
-            if (!target) {
-                throw new Error(`找不到紀錄 ID: ${recordId}`);
-            }
-
-            // [Write Protection] 確保資料來源支援 rowIndex (Sheet Only)
-            if (!target.rowIndex) {
-                throw new Error('[Forbidden] 無法更新 SQL 來源的資料 (Missing rowIndex)。請切換回 Sheet 模式或聯絡管理員。');
-            }
-
-            // 2. Pure Write
             const modifier = data.creator || 'System';
-            return await this.weeklyBusinessWriter.updateEntryRow(target.rowIndex, data, modifier);
+            
+            if (!this.weeklyBusinessSqlWriter) {
+                throw new Error('[WeeklyService] WeeklyBusinessSqlWriter not configured. Update failed.');
+            }
+
+            // Direct SQL Update without prior Sheet lookup
+            return await this.weeklyBusinessSqlWriter.updateEntry(recordId, data, modifier);
         } catch (error) {
             console.error('[WeeklyService] updateWeeklyBusinessEntry Error:', error);
             throw error;
@@ -410,25 +359,16 @@ class WeeklyBusinessService {
     }
 
     /**
-     * 刪除週報
+     * [Phase 7-3] Delete -> SQL Only (Strict)
      */
     async deleteWeeklyBusinessEntry(recordId) {
         try {
-            // 1. Service Lookup
-            const allEntries = await this._fetchInternal('ENTRIES');
-            const target = allEntries.find(e => e.recordId === recordId);
-            
-            if (!target) {
-                throw new Error(`找不到紀錄 ID: ${recordId}`);
+            if (!this.weeklyBusinessSqlWriter) {
+                throw new Error('[WeeklyService] WeeklyBusinessSqlWriter not configured. Delete failed.');
             }
 
-            // [Write Protection] 確保資料來源支援 rowIndex (Sheet Only)
-            if (!target.rowIndex) {
-                throw new Error('[Forbidden] 無法刪除 SQL 來源的資料 (Missing rowIndex)。請切換回 Sheet 模式或聯絡管理員。');
-            }
-
-            // 2. Pure Write
-            return await this.weeklyBusinessWriter.deleteEntryRow(target.rowIndex);
+            // Direct SQL Delete without prior Sheet lookup
+            return await this.weeklyBusinessSqlWriter.deleteEntry(recordId);
         } catch (error) {
             console.error('[WeeklyService] deleteWeeklyBusinessEntry Error:', error);
             throw error;

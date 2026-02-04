@@ -1,9 +1,7 @@
 /**
  * services/service-container.js
  * 服務容器 (IoC Container)
- * * @version 7.5.3 (Fix: EventLog DI & Interaction Protection)
- * @date 2026-02-02
- * @description [Closure Fix] 補齊 EventLogSqlReader 注入，完成 Phase 6-2 架構一致性。
+ * * @version 7.9.0 (Phase 7-3: Sheet Retirement Config)
  */
 
 const config = require('../config');
@@ -14,20 +12,20 @@ const GoogleClientService = require('./google-client-service');
 
 // --- Import Readers ---
 const ContactReader = require('../data/contact-reader');
-const ContactSqlReader = require('../data/contact-sql-reader'); // [Added] Phase 6-2
+const ContactSqlReader = require('../data/contact-sql-reader');
 const CompanyReader = require('../data/company-reader');
-const CompanySqlReader = require('../data/company-sql-reader'); // [Added] Phase 6-2
+const CompanySqlReader = require('../data/company-sql-reader');
 const OpportunityReader = require('../data/opportunity-reader');
-const OpportunitySqlReader = require('../data/opportunity-sql-reader'); // [Added] Phase 6-2
+const OpportunitySqlReader = require('../data/opportunity-sql-reader');
 const InteractionReader = require('../data/interaction-reader');
-const InteractionSqlReader = require('../data/interaction-sql-reader'); // [Added] Phase 6-2
+const InteractionSqlReader = require('../data/interaction-sql-reader');
 const EventLogReader = require('../data/event-log-reader');
-const EventLogSqlReader = require('../data/event-log-sql-reader'); // [Added] Phase 6-2 Fix: Inject SQL Reader
+const EventLogSqlReader = require('../data/event-log-sql-reader');
 const SystemReader = require('../data/system-reader');
 const WeeklyBusinessReader = require('../data/weekly-business-reader');
-const WeeklyBusinessSqlReader = require('../data/weekly-business-sql-reader'); // [Added] Phase 6-2 Fix
+const WeeklyBusinessSqlReader = require('../data/weekly-business-sql-reader');
 const AnnouncementReader = require('../data/announcement-reader');
-const AnnouncementSqlReader = require('../data/announcement-sql-reader'); // [Added] Phase 6-2 Announcement
+const AnnouncementSqlReader = require('../data/announcement-sql-reader');
 const ProductReader = require('../data/product-reader');
 
 // --- Import Writers ---
@@ -38,6 +36,7 @@ const InteractionWriter = require('../data/interaction-writer');
 const EventLogWriter = require('../data/event-log-writer');
 const SystemWriter = require('../data/system-writer');
 const WeeklyBusinessWriter = require('../data/weekly-business-writer');
+const WeeklyBusinessSqlWriter = require('../data/weekly-business-sql-writer');
 const AnnouncementWriter = require('../data/announcement-writer');
 const ProductWriter = require('../data/product-writer');
 
@@ -56,10 +55,9 @@ const WorkflowService = require('./workflow-service');
 const ProductService = require('./product-service');
 const AnnouncementService = require('./announcement-service'); 
 const EventService = require('./event-service');
-// [New] Import SystemService
 const SystemService = require('./system-service');
 
-// --- Import Controllers (Class Based) ---
+// --- Import Controllers ---
 const AuthController = require('../controllers/auth.controller');
 const SystemController = require('../controllers/system.controller');
 const AnnouncementController = require('../controllers/announcement.controller');
@@ -75,7 +73,7 @@ let services = null;
 async function initializeServices() {
     if (services) return services;
 
-    console.log('🚀 [System] 正在初始化 Service Container (v7.5.3 Phase 6-2 Closure)...');
+    console.log('🚀 [System] 正在初始化 Service Container (v7.9.0 Phase 7-3)...');
 
     try {
         // 1. Infrastructure
@@ -86,19 +84,19 @@ async function initializeServices() {
 
         // 2. Readers
         const contactReader = new ContactReader(sheets, config.IDS.RAW);
-        const contactSqlReader = new ContactSqlReader(); // [Added] Phase 6-2
+        const contactSqlReader = new ContactSqlReader();
         const companyReader = new CompanyReader(sheets, config.IDS.CORE);
-        const companySqlReader = new CompanySqlReader(); // [Added] Phase 6-2
+        const companySqlReader = new CompanySqlReader();
         const opportunityReader = new OpportunityReader(sheets, config.IDS.CORE);
-        const opportunitySqlReader = new OpportunitySqlReader(); // [Added] Phase 6-2
+        const opportunitySqlReader = new OpportunitySqlReader();
         const interactionReader = new InteractionReader(sheets, config.IDS.CORE);
-        const interactionSqlReader = new InteractionSqlReader(); // [Added] Phase 6-2
+        const interactionSqlReader = new InteractionSqlReader();
         const eventLogReader = new EventLogReader(sheets, config.IDS.CORE);
-        const eventLogSqlReader = new EventLogSqlReader(); // [Added] Phase 6-2 Fix
+        const eventLogSqlReader = new EventLogSqlReader();
         const weeklyReader = new WeeklyBusinessReader(sheets, config.IDS.CORE);
-        const weeklySqlReader = new WeeklyBusinessSqlReader(); // [Added] Phase 6-2 Fix
+        const weeklySqlReader = new WeeklyBusinessSqlReader();
         const announcementReader = new AnnouncementReader(sheets, config.IDS.CORE);
-        const announcementSqlReader = new AnnouncementSqlReader(); // [Added] Phase 6-2 Announcement
+        const announcementSqlReader = new AnnouncementSqlReader();
         const systemReader = new SystemReader(sheets, config.IDS.SYSTEM);
         const productReader = new ProductReader(sheets, config.IDS.PRODUCT);
 
@@ -109,6 +107,7 @@ async function initializeServices() {
         const interactionWriter = new InteractionWriter(sheets, config.IDS.CORE, interactionReader);
         const eventLogWriter = new EventLogWriter(sheets, config.IDS.CORE, eventLogReader);
         const weeklyWriter = new WeeklyBusinessWriter(sheets, config.IDS.CORE, weeklyReader);
+        const weeklySqlWriter = new WeeklyBusinessSqlWriter();
         const announcementWriter = new AnnouncementWriter(sheets, config.IDS.CORE, announcementReader);
         const systemWriter = new SystemWriter(sheets, config.IDS.SYSTEM, systemReader);
         const productWriter = new ProductWriter(sheets, config.IDS.PRODUCT, productReader);
@@ -117,17 +116,14 @@ async function initializeServices() {
         const calendarService = new CalendarService(calendar);
         const authService = new AuthService(systemReader, systemWriter);
 
-        // Announcement Service
         const announcementService = new AnnouncementService({
             announcementReader,
-            announcementSqlReader, // [Added] Inject SQL Reader
+            announcementSqlReader,
             announcementWriter
         });
 
-        // [New] System Service
         const systemService = new SystemService(systemReader, systemWriter);
 
-        // [Modified] Inject companySqlReader (11th arg)
         const companyService = new CompanyService(
             companyReader, companyWriter, contactReader, contactWriter,
             opportunityReader, opportunityWriter, interactionReader, interactionWriter,
@@ -135,10 +131,8 @@ async function initializeServices() {
             companySqlReader
         );
         
-        // [Modified] Inject config (4th) and contactSqlReader (5th)
         const contactService = new ContactService(contactReader, contactWriter, companyReader, config, contactSqlReader);
 
-        // [Modified] Inject opportunitySqlReader (in params object)
         const opportunityService = new OpportunityService({
             config, 
             opportunityReader, opportunityWriter, 
@@ -146,10 +140,9 @@ async function initializeServices() {
             companyReader, companyWriter, 
             interactionReader, interactionWriter,
             eventLogReader, systemReader,
-            opportunitySqlReader // [Added]
+            opportunitySqlReader
         });
 
-        // [Modified] Inject interactionSqlReader (5th arg)
         const interactionService = new InteractionService(
             interactionReader, 
             interactionWriter, 
@@ -158,7 +151,6 @@ async function initializeServices() {
             interactionSqlReader
         );
         
-        // [Fix] Inject eventLogSqlReader (7th arg)
         const eventLogService = new EventLogService(
             eventLogReader, 
             eventLogWriter, 
@@ -166,13 +158,15 @@ async function initializeServices() {
             companyReader, 
             systemReader, 
             calendarService,
-            eventLogSqlReader // [Added] Dependency Injection
+            eventLogSqlReader
         );
         
+        // [Modified Phase 7-3] Removed weeklyBusinessWriter injection
         const weeklyBusinessService = new WeeklyBusinessService({
             weeklyBusinessReader: weeklyReader,
-            weeklyBusinessSqlReader: weeklySqlReader, // [Fixed] Inject SQL Reader
-            weeklyBusinessWriter: weeklyWriter,
+            weeklyBusinessSqlReader: weeklySqlReader,
+            weeklyBusinessSqlWriter: weeklySqlWriter,
+            // weeklyBusinessWriter: weeklyWriter, // Removed
             dateHelpers,
             calendarService,
             systemReader,
@@ -205,18 +199,13 @@ async function initializeServices() {
 
         // 5. Controllers
         const authController = new AuthController(authService);
-        
-        // [Fix] Inject SystemService instead of Reader/Writer
         const systemController = new SystemController(systemService, dashboardService);
-        
         const announcementController = new AnnouncementController(announcementService);
         const contactController = new ContactController(contactService, workflowService, contactWriter);
         const companyController = new CompanyController(companyService);
-        
         const opportunityController = new OpportunityController(
             opportunityService, workflowService, dashboardService, opportunityReader, opportunityWriter
         );
-        
         const interactionController = new InteractionController(interactionService);
         const productController = new ProductController(productService);
         const weeklyController = new WeeklyController(weeklyBusinessService);
@@ -231,10 +220,7 @@ async function initializeServices() {
             workflowService, productService, 
             announcementService,
             eventService,
-            // [New] Export SystemService
             systemService,
-
-            // Controllers
             authController,
             systemController,
             announcementController,
@@ -244,11 +230,9 @@ async function initializeServices() {
             interactionController,
             productController,
             weeklyController,
-
-            // Writers (Legacy compatibility)
             contactWriter,
             weeklyBusinessReader: weeklyReader,
-            weeklyBusinessWriter: weeklyWriter,
+            weeklyBusinessWriter: weeklyWriter, // Kept for legacy export compatibility ONLY
             systemReader, systemWriter,
             interactionWriter,
             eventLogReader
