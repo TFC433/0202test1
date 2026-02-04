@@ -2,8 +2,7 @@
 // -------------------------------------------------------------------------
 // 檔案職責：專門負責「機會核心資訊」的純顯示模式 (Read-Only UI)
 // UI 風格：Final Polish + Bento Grid Optimization
-// 修改紀錄：[2025-12-16] 應用 Bento 風格：加大圓角(16px)、統一間距(16px)、新增卡片懸停浮起效果。
-// 【2025-12-16 修正】移除不可靠的前端職稱查找，改用後端提供的 mainContactJobTitle
+// 修改紀錄：[2026-02-04] Phase 7 SQL Type Fix: 使用 Number() 處理機會價值型別
 // -------------------------------------------------------------------------
 
 const OpportunityInfoView = (() => {
@@ -416,8 +415,6 @@ const OpportunityInfoView = (() => {
         return null;
     }
 
-    // 【修改】移除舊的 _getContactTitle，改由後端提供
-
     function render(opp) {
         _injectStyles();
 
@@ -455,7 +452,12 @@ const OpportunityInfoView = (() => {
         } catch (e) {}
 
         // 3. 數值與日期
-        const valueStr = opp.opportunityValue ? parseInt(opp.opportunityValue.replace(/,/g, '')).toLocaleString() : '0';
+        // [Phase 7 SQL Type Safety Fix] Ensure value is string before replace, use Number()
+        const rawValue = opp.opportunityValue;
+        const cleanVal = (rawValue !== null && rawValue !== undefined) ? String(rawValue).replace(/,/g, '') : '0';
+        const numVal = Number(cleanVal);
+        const valueStr = isNaN(numVal) ? '0' : numVal.toLocaleString();
+        
         const createdDate = opp.createdTime ? opp.createdTime.split('T')[0] : '-';
         const closeDate = opp.expectedCloseDate ? opp.expectedCloseDate.split('T')[0] : '-';
         

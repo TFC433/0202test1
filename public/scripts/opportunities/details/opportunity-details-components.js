@@ -1,5 +1,7 @@
 // public/scripts/opportunity-details/opportunity-details-components.js
 // 職責：整合機會詳細頁面組件，處理編輯邏輯與資料存取
+// * @version 1.1.0 (Phase 7 SQL Type Compatibility Fix)
+// * @date 2026-02-04
 // (依賴 OpportunityInfoView 進行顯示模式渲染)
 
 function _injectStylesForOppInfoCard() {
@@ -213,7 +215,11 @@ const OpportunityInfoCard = (() => {
     async function _generateEditFormHTML(opp) {
         const salesModel = opp.salesModel || '直接販售';
         const isManualValue = opp.opportunityValueType === 'manual';
-        const formattedValue = (opp.opportunityValue || '0').replace(/,/g, '');
+        
+        // [Phase 7 SQL Type Compatibility Fix] Ensure value is string before replace
+        const rawValue = opp.opportunityValue;
+        const formattedValue = String(rawValue !== null && rawValue !== undefined ? rawValue : '0').replace(/,/g, '');
+        
         const salesModelOptions = ['直接販售', '經由SI販售', '經由MTB販售'];
         
         const createdDate = opp.createdTime ? opp.createdTime.split('T')[0] : '';

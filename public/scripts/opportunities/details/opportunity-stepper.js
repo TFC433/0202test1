@@ -1,5 +1,7 @@
 // views/scripts/opportunity-details/stepper.js
 // 職責：專門管理「機會進程」區塊的所有 UI 渲染與互動邏輯
+// * @version 2.1.0 (Phase 7 SQL Type Compatibility Fix)
+// * @date 2026-02-04
 // (V2 - 修正：相容新舊兩種 stageHistory 格式)
 
 const OpportunityStepper = (() => {
@@ -120,8 +122,13 @@ const OpportunityStepper = (() => {
         if (_opportunityInfo.stageHistory) {
             
             // --- 【*** 關鍵修正：相容新舊格式 ***】 ---
+            // [Phase 7 SQL Type Compatibility Fix] Support Array (SQL) or String (Sheet)
+            const historyList = Array.isArray(_opportunityInfo.stageHistory) 
+                ? _opportunityInfo.stageHistory 
+                : String(_opportunityInfo.stageHistory).split(',');
+
             // 這段邏輯現在可以同時處理 "C:01_..." 和 "01_..." 兩種格式
-            _opportunityInfo.stageHistory.split(',').forEach(item => {
+            historyList.forEach(item => {
                 if (!item) return; // 忽略空字串
                 
                 if(item.includes(':')) {

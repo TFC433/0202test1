@@ -1,13 +1,14 @@
 /**
  * services/dashboard-service.js
  * 儀表板業務邏輯層 (Dashboard Aggregator)
- * * @version 6.0.1 (Forensics Patch: Risk Annotation)
- * @date 2026-01-29
+ * * @version 7.0.0 (Phase 7: Dashboard Read Fix)
+ * @date 2026-02-04
  * @description 負責整合各個模組的數據，計算統計指標、圖表數據與 KPI。
  * * [Forensics Notes]
- * 1. [Direct Read] 本服務直接讀取 Opportunity/Contact/Interaction Reader 以優化效能。
- * 2. [Shadow Logic] 內含 MTU/SI 活躍定義邏輯，未來應遷移至 CompanyService。
- * 3. [Logic Duplication] _getWeekId 為暫時性重複邏輯，Phase 6 應統一注入 DateHelpers。
+ * 1. [Direct Read] 本服務直接讀取 Opportunity/Interaction Reader 以優化效能。
+ * 2. [Phase 7 Fix] Contact 資料讀取已由 Reader 改為透過 ContactService 取得，以支援 SQL/Sheet 混合模式。
+ * 3. [Shadow Logic] 內含 MTU/SI 活躍定義邏輯，未來應遷移至 CompanyService。
+ * 4. [Logic Duplication] _getWeekId 為暫時性重複邏輯，Phase 6 應統一注入 DateHelpers。
  */
 
 class DashboardService {
@@ -15,7 +16,7 @@ class DashboardService {
      * 建構子：接收所有必要的資料讀取器與服務
      * @param {Object} config - 系統設定
      * @param {OpportunityReader} opportunityReader - [Direct Read]
-     * @param {ContactReader} contactReader - [Direct Read]
+     * @param {ContactService} contactService - [Phase 7 Fix] 取代原有的 ContactReader
      * @param {InteractionReader} interactionReader - [Direct Read]
      * @param {EventLogReader} eventLogReader - [Direct Read]
      * @param {SystemReader} systemReader
@@ -26,7 +27,7 @@ class DashboardService {
     constructor(
         config,
         opportunityReader,
-        contactReader,
+        contactService,
         interactionReader,
         eventLogReader,
         systemReader,
@@ -35,13 +36,13 @@ class DashboardService {
         calendarService
     ) {
         // 嚴格檢查依賴
-        if (!opportunityReader || !contactReader || !interactionReader || !config) {
-            throw new Error('[DashboardService] 初始化失敗：缺少必要的 Reader 或 Config');
+        if (!opportunityReader || !contactService || !interactionReader || !config) {
+            throw new Error('[DashboardService] 初始化失敗：缺少必要的 Reader/Service 或 Config');
         }
 
         this.config = config;
         this.opportunityReader = opportunityReader;
-        this.contactReader = contactReader;
+        this.contactService = contactService; // [Phase 7 Fix] 使用 Service 層
         this.interactionReader = interactionReader;
         this.eventLogReader = eventLogReader;
         this.systemReader = systemReader;
@@ -89,7 +90,7 @@ class DashboardService {
             interactions
         ] = await Promise.all([
             this.opportunityReader.getOpportunities(),
-            this.contactReader.getContacts(),
+            this.contactService.getAllOfficialContacts(), // [Phase 7 Fix] 改呼叫 Service 介面
             this.interactionReader.getInteractions()
         ]);
 
@@ -395,7 +396,8 @@ class DashboardService {
     }
 
     async getContactsDashboardData() {
-        const contacts = await this.contactReader.getContacts();
+        // [Phase 7 Fix] 使用 Service 方法
+        const contacts = await this.contactService.getAllOfficialContacts();
         return {
             chartData: {
                 trend: this._prepareTrendData(contacts),

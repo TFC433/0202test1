@@ -1,7 +1,7 @@
 /**
  * services/contact-service.js
  * 聯絡人業務邏輯服務層
- * * @version 7.3.0 (Phase 7: SQL Write + Reader Split RAW/CORE ROOT FIX)
+ * * @version 7.3.1 (Phase 7: Dashboard Interface Support)
  * @date 2026-02-04
  * @description
  * - Official Contacts: SQL primary read, Sheet fallback via CORE reader only.
@@ -92,6 +92,21 @@ class ContactService {
         if (!target) throw new Error(`Contact ID not found: ${contactId}`);
         if (!target.rowIndex) throw new Error(`System Error: Missing rowIndex for Contact ${contactId}`);
         return target.rowIndex;
+    }
+
+    /**
+     * [Phase 7 Dashboard Interface]
+     * 提供儀表板所需的完整正式聯絡人清單
+     * 封裝 SQL/Sheet 混合讀取邏輯
+     * @returns {Promise<Array>} 成功回傳聯絡人陣列，失敗回傳空陣列
+     */
+    async getAllOfficialContacts() {
+        try {
+            return await this._fetchOfficialContactsWithCompanies();
+        } catch (error) {
+            console.error('[ContactService] getAllOfficialContacts Failed:', error);
+            return []; // Fail-safe
+        }
     }
 
     async getDashboardStats() {
