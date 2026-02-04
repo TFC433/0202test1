@@ -30,6 +30,7 @@ const ProductReader = require('../data/product-reader');
 
 // --- Import Writers ---
 const ContactWriter = require('../data/contact-writer');
+const ContactSqlWriter = require('../data/contact-sql-writer'); // [Phase 7] New
 const CompanyWriter = require('../data/company-writer');
 const OpportunityWriter = require('../data/opportunity-writer');
 const InteractionWriter = require('../data/interaction-writer');
@@ -102,6 +103,7 @@ async function initializeServices() {
 
         // 3. Writers
         const contactWriter = new ContactWriter(sheets, config.IDS.RAW, contactReader);
+        const contactSqlWriter = new ContactSqlWriter(); // [Phase 7] Init
         const companyWriter = new CompanyWriter(sheets, config.IDS.CORE, companyReader);
         const opportunityWriter = new OpportunityWriter(sheets, config.IDS.CORE, opportunityReader, contactReader);
         const interactionWriter = new InteractionWriter(sheets, config.IDS.CORE, interactionReader);
@@ -131,7 +133,15 @@ async function initializeServices() {
             companySqlReader
         );
         
-        const contactService = new ContactService(contactReader, contactWriter, companyReader, config, contactSqlReader);
+        // [Phase 7-3] Injected ContactSqlWriter as 6th argument
+        const contactService = new ContactService(
+            contactReader, 
+            contactWriter, 
+            companyReader, 
+            config, 
+            contactSqlReader, 
+            contactSqlWriter
+        );
 
         const opportunityService = new OpportunityService({
             config, 

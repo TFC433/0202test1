@@ -1,26 +1,28 @@
 /**
  * services/contact-service.js
  * 聯絡人業務邏輯服務層
- * * @version HOTFIX-PHASE6-2-READ-SWITCH-V2
- * @date 2026-01-30
+ * * @version 7.1.0 (Phase 7: SQL Write Authority)
+ * @date 2026-02-04
  * @description Service behavior switching: SQL Primary Read with Sheet Fallback.
- * Strict error handling: SQL Empty/Null triggers fallback; Sheet errors propagate.
+ * [Phase 7]: Write operations (Create/Update/Delete) for Official Contacts moved strictly to SQL.
  */
 
 class ContactService {
     /**
      * @param {ContactReader} contactReader
-     * @param {ContactWriter} contactWriter
+     * @param {ContactWriter} contactWriter - Kept ONLY for Potential Contacts (Raw Data)
      * @param {CompanyReader} companyReader
      * @param {Object} config
      * @param {ContactSqlReader} [contactSqlReader] - Optional Injection for SQL Read
+     * @param {ContactSqlWriter} [contactSqlWriter] - [New] Injection for SQL Write
      */
-    constructor(contactReader, contactWriter, companyReader, config, contactSqlReader) {
+    constructor(contactReader, contactWriter, companyReader, config, contactSqlReader, contactSqlWriter) {
         this.contactReader = contactReader;
         this.contactWriter = contactWriter;
         this.companyReader = companyReader;
         this.config = config || { PAGINATION: { CONTACTS_PER_PAGE: 20 } }; 
         this.contactSqlReader = contactSqlReader; // SQL Reader Injection
+        this.contactSqlWriter = contactSqlWriter; // [New] SQL Writer Injection
     }
 
     /**
@@ -105,10 +107,9 @@ class ContactService {
 
     /**
      * [Helper] Resolve RowIndex for Official Contact Update
-     * 隔離對 rowIndex 的依賴，未來替換 SQL 時可在此處適配。
-     * [CRITICAL] Update 必須依賴 Sheet Reader 取得 rowIndex，禁止使用 SQL。
-     * @param {string} contactId 
-     * @returns {Promise<number>} rowIndex
+     * [Phase 7 Deprecation] This method should no longer be used for Official Writes.
+     * Kept momentarily if needed for legacy read-based logic, but effectively orphaned by Phase 7-2.
+     * @deprecated
      */
     async _resolveContactRowIndex(contactId) {
         // Strict Sheet Read for Write Operations
@@ -357,19 +358,43 @@ class ContactService {
     }
 
     /**
-     * 更新正式聯絡人資料
-     * [Flow Control]: Find rowIndex via Helper -> Call Writer
+     * [Phase 7-1] 建立正式聯絡人 (SQL Only)
+     * Ensures compatibility with WorkflowService
+     */
+    async createContact(contactData, user) {
+        try {
+            if (!this.contactSqlWriter) {
+                throw new Error('[ContactService] ContactSqlWriter not configured. Create failed.');
+            }
+
+            const result = await this.contactSqlWriter.createContact(contactData, user);
+            
+            // [Legacy] Invalidate Reader Cache to force refresh if Reader is still used
+            if (this.contactReader) this.contactReader.invalidateCache('contactList');
+
+            return result; // Returns { success: true, id: ... }
+        } catch (error) {
+            console.error('[ContactService] createContact Error:', error);
+            throw error;
+        }
+    }
+
+    /**
+     * [Phase 7-2] 更新正式聯絡人資料 (SQL Only)
+     * Completely bypasses Sheet RowIndex lookup.
      */
     async updateContact(contactId, updateData, user) {
         try {
-            // 1. Resolve RowIndex (Isolated Logic - Strict Sheet)
-            const rowIndex = await this._resolveContactRowIndex(contactId);
+            if (!this.contactSqlWriter) {
+                throw new Error('[ContactService] ContactSqlWriter not configured. Update failed.');
+            }
 
-            // 2. 呼叫 Writer 執行 Pure Write
-            await this.contactWriter.updateContactRow(rowIndex, updateData, user);
+            // [Phase 7-2] Direct SQL Write - No RowIndex needed
+            await this.contactSqlWriter.updateContact(contactId, updateData, user);
             
-            // 3. Invalidate Cache
-            this.contactReader.invalidateCache('contactList');
+            // [Legacy] Invalidate Cache
+            if (this.contactReader) this.contactReader.invalidateCache('contactList');
+            
             return { success: true };
         } catch (error) {
             console.error('[ContactService] updateContact Error:', error);
@@ -378,7 +403,29 @@ class ContactService {
     }
 
     /**
-     * 更新潛在客戶資料
+     * [Phase 7-2] 刪除正式聯絡人 (SQL Only)
+     */
+    async deleteContact(contactId, user) {
+        try {
+            if (!this.contactSqlWriter) {
+                throw new Error('[ContactService] ContactSqlWriter not configured. Delete failed.');
+            }
+
+            await this.contactSqlWriter.deleteContact(contactId);
+
+            // [Legacy] Invalidate Cache
+            if (this.contactReader) this.contactReader.invalidateCache('contactList');
+            
+            return { success: true };
+        } catch (error) {
+            console.error('[ContactService] deleteContact Error:', error);
+            throw error;
+        }
+    }
+
+    /**
+     * 更新潛在客戶資料 (Raw Data)
+     * [Scope Lock]: Remains using Sheet Writer.
      * [Flow Control]: Read -> Merge -> Write (Read-Modify-Write at Service Layer)
      */
     async updatePotentialContact(rowIndex, updateData, modifier) {
