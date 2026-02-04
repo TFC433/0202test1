@@ -1,7 +1,12 @@
 /**
  * services/service-container.js
  * 服務容器 (IoC Container)
- * * @version 7.9.0 (Phase 7-3: Sheet Retirement Config)
+ * * @version 7.9.3 (Phase 7: Contact Reader Split RAW/CORE - ROOT FIX)
+ * * @date 2026-02-04
+ * * @description
+ * - Root Fix: Split ContactReader into RAW (IDS.RAW) and CORE (IDS.CORE).
+ * - Prevent "Unable to parse range" for CORE sheets when using RAW spreadsheet.
+ * - Phase 7: Contact writes -> SQL only (handled in ContactService via ContactSqlWriter).
  */
 
 const config = require('../config');
@@ -30,7 +35,7 @@ const ProductReader = require('../data/product-reader');
 
 // --- Import Writers ---
 const ContactWriter = require('../data/contact-writer');
-const ContactSqlWriter = require('../data/contact-sql-writer'); // [Phase 7] New
+const ContactSqlWriter = require('../data/contact-sql-writer');
 const CompanyWriter = require('../data/company-writer');
 const OpportunityWriter = require('../data/opportunity-writer');
 const InteractionWriter = require('../data/interaction-writer');
@@ -54,7 +59,7 @@ const SalesAnalysisService = require('./sales-analysis-service');
 const WeeklyBusinessService = require('./weekly-business-service');
 const WorkflowService = require('./workflow-service');
 const ProductService = require('./product-service');
-const AnnouncementService = require('./announcement-service'); 
+const AnnouncementService = require('./announcement-service');
 const EventService = require('./event-service');
 const SystemService = require('./system-service');
 
@@ -67,14 +72,14 @@ const ContactController = require('../controllers/contact.controller');
 const CompanyController = require('../controllers/company.controller');
 const InteractionController = require('../controllers/interaction.controller');
 const ProductController = require('../controllers/product.controller');
-const WeeklyController = require('../controllers/weekly.controller'); 
+const WeeklyController = require('../controllers/weekly.controller');
 
 let services = null;
 
 async function initializeServices() {
     if (services) return services;
 
-    console.log('🚀 [System] 正在初始化 Service Container (v7.9.0 Phase 7-3)...');
+    console.log('🚀 [System] 正在初始化 Service Container (v7.9.3 Phase 7 ROOT FIX)...');
 
     try {
         // 1. Infrastructure
@@ -84,32 +89,56 @@ async function initializeServices() {
         const calendar = await googleClientService.getCalendarClient();
 
         // 2. Readers
-        const contactReader = new ContactReader(sheets, config.IDS.RAW);
+        // ✅ ROOT FIX: split ContactReader
+        const contactRawReader = new ContactReader(sheets, config.IDS.RAW);   // Raw potential contacts / business cards
+        const contactCoreReader = new ContactReader(sheets, config.IDS.CORE); // Official contact list + link table
+
         const contactSqlReader = new ContactSqlReader();
+
         const companyReader = new CompanyReader(sheets, config.IDS.CORE);
         const companySqlReader = new CompanySqlReader();
+
         const opportunityReader = new OpportunityReader(sheets, config.IDS.CORE);
         const opportunitySqlReader = new OpportunitySqlReader();
+
         const interactionReader = new InteractionReader(sheets, config.IDS.CORE);
         const interactionSqlReader = new InteractionSqlReader();
+
         const eventLogReader = new EventLogReader(sheets, config.IDS.CORE);
         const eventLogSqlReader = new EventLogSqlReader();
+
         const weeklyReader = new WeeklyBusinessReader(sheets, config.IDS.CORE);
         const weeklySqlReader = new WeeklyBusinessSqlReader();
+
         const announcementReader = new AnnouncementReader(sheets, config.IDS.CORE);
         const announcementSqlReader = new AnnouncementSqlReader();
+
         const systemReader = new SystemReader(sheets, config.IDS.SYSTEM);
         const productReader = new ProductReader(sheets, config.IDS.PRODUCT);
 
         // 3. Writers
-        const contactWriter = new ContactWriter(sheets, config.IDS.RAW, contactReader);
-        const contactSqlWriter = new ContactSqlWriter(); // [Phase 7] Init
+        // ✅ RAW writer stays RAW
+        const contactWriter = new ContactWriter(sheets, config.IDS.RAW, contactRawReader);
+
+        const contactSqlWriter = new ContactSqlWriter();
+
         const companyWriter = new CompanyWriter(sheets, config.IDS.CORE, companyReader);
-        const opportunityWriter = new OpportunityWriter(sheets, config.IDS.CORE, opportunityReader, contactReader);
+
+        // ✅ ROOT FIX: OpportunityWriter should not depend on RAW contact reader.
+        // If it needs contact list / link validation, those are CORE.
+        const opportunityWriter = new OpportunityWriter(
+            sheets,
+            config.IDS.CORE,
+            opportunityReader,
+            contactCoreReader
+        );
+
         const interactionWriter = new InteractionWriter(sheets, config.IDS.CORE, interactionReader);
         const eventLogWriter = new EventLogWriter(sheets, config.IDS.CORE, eventLogReader);
+
         const weeklyWriter = new WeeklyBusinessWriter(sheets, config.IDS.CORE, weeklyReader);
         const weeklySqlWriter = new WeeklyBusinessSqlWriter();
+
         const announcementWriter = new AnnouncementWriter(sheets, config.IDS.CORE, announcementReader);
         const systemWriter = new SystemWriter(sheets, config.IDS.SYSTEM, systemReader);
         const productWriter = new ProductWriter(sheets, config.IDS.PRODUCT, productReader);
@@ -126,57 +155,67 @@ async function initializeServices() {
 
         const systemService = new SystemService(systemReader, systemWriter);
 
-        const companyService = new CompanyService(
-            companyReader, companyWriter, contactReader, contactWriter,
-            opportunityReader, opportunityWriter, interactionReader, interactionWriter,
-            eventLogReader, systemReader,
-            companySqlReader
-        );
-        
-        // [Phase 7-3] Injected ContactSqlWriter as 6th argument
+        // ✅ ROOT FIX: ContactService gets BOTH readers
         const contactService = new ContactService(
-            contactReader, 
-            contactWriter, 
-            companyReader, 
-            config, 
-            contactSqlReader, 
+            contactRawReader,     // was contactReader (RAW)
+            contactCoreReader,    // NEW: official/link sheet fallback
+            contactWriter,
+            companyReader,
+            config,
+            contactSqlReader,
             contactSqlWriter
         );
 
-        const opportunityService = new OpportunityService({
-            config, 
-            opportunityReader, opportunityWriter, 
-            contactReader, contactWriter, 
-            companyReader, companyWriter, 
+        // ✅ CompanyService / OpportunityService must use CORE contact reader, not RAW
+        const companyService = new CompanyService(
+            companyReader, companyWriter,
+            contactCoreReader, contactWriter, // contactWriter is RAW but should only be used for potential scope by whatever legacy call chain
+            opportunityReader, opportunityWriter,
             interactionReader, interactionWriter,
             eventLogReader, systemReader,
-            opportunitySqlReader
+            companySqlReader,
+            contactService
+        );
+
+        const opportunityService = new OpportunityService({
+            config,
+            opportunityReader,
+            opportunityWriter,
+            contactReader: contactCoreReader, // ✅ CORE
+            contactWriter,
+            companyReader,
+            companyWriter,
+            interactionReader,
+            interactionWriter,
+            eventLogReader,
+            systemReader,
+            opportunitySqlReader,
+            contactService
         });
 
         const interactionService = new InteractionService(
-            interactionReader, 
-            interactionWriter, 
-            opportunityReader, 
+            interactionReader,
+            interactionWriter,
+            opportunityReader,
             companyReader,
             interactionSqlReader
         );
-        
+
         const eventLogService = new EventLogService(
-            eventLogReader, 
-            eventLogWriter, 
-            opportunityReader, 
-            companyReader, 
-            systemReader, 
+            eventLogReader,
+            eventLogWriter,
+            opportunityReader,
+            companyReader,
+            systemReader,
             calendarService,
             eventLogSqlReader
         );
-        
-        // [Modified Phase 7-3] Removed weeklyBusinessWriter injection
+
         const weeklyBusinessService = new WeeklyBusinessService({
             weeklyBusinessReader: weeklyReader,
             weeklyBusinessSqlReader: weeklySqlReader,
             weeklyBusinessSqlWriter: weeklySqlWriter,
-            // weeklyBusinessWriter: weeklyWriter, // Removed
+            // weeklyBusinessWriter: weeklyWriter, // Phase 7: removed
             dateHelpers,
             calendarService,
             systemReader,
@@ -186,10 +225,18 @@ async function initializeServices() {
 
         const salesAnalysisService = new SalesAnalysisService(opportunityReader, systemReader, config);
         const productService = new ProductService(productReader, productWriter, systemReader, systemWriter);
-        
+
+        // Dashboard uses contactService (SQL primary) — keep
         const dashboardService = new DashboardService(
-            config, opportunityReader, contactReader, interactionReader,
-            eventLogReader, systemReader, weeklyBusinessService, companyReader, calendarService
+            config,
+            opportunityReader,
+            contactService,
+            interactionReader,
+            eventLogReader,
+            systemReader,
+            weeklyBusinessService,
+            companyReader,
+            calendarService
         );
 
         const workflowService = new WorkflowService(
@@ -199,11 +246,11 @@ async function initializeServices() {
         );
 
         const eventService = new EventService(
-            calendarService, 
-            interactionService, 
-            weeklyBusinessService, 
-            opportunityService, 
-            config, 
+            calendarService,
+            interactionService,
+            weeklyBusinessService,
+            opportunityService,
+            config,
             dateHelpers
         );
 
@@ -214,7 +261,11 @@ async function initializeServices() {
         const contactController = new ContactController(contactService, workflowService, contactWriter);
         const companyController = new CompanyController(companyService);
         const opportunityController = new OpportunityController(
-            opportunityService, workflowService, dashboardService, opportunityReader, opportunityWriter
+            opportunityService,
+            workflowService,
+            dashboardService,
+            opportunityReader,
+            opportunityWriter
         );
         const interactionController = new InteractionController(interactionService);
         const productController = new ProductController(productService);
@@ -227,7 +278,7 @@ async function initializeServices() {
             authService, contactService, companyService,
             opportunityService, interactionService, eventLogService, calendarService,
             weeklyBusinessService, salesAnalysisService, dashboardService,
-            workflowService, productService, 
+            workflowService, productService,
             announcementService,
             eventService,
             systemService,
@@ -240,9 +291,16 @@ async function initializeServices() {
             interactionController,
             productController,
             weeklyController,
+
+            // expose writers/readers if legacy needs them
             contactWriter,
+
+            // expose split readers explicitly (debuggable)
+            contactRawReader,
+            contactCoreReader,
+
             weeklyBusinessReader: weeklyReader,
-            weeklyBusinessWriter: weeklyWriter, // Kept for legacy export compatibility ONLY
+            weeklyBusinessWriter: weeklyWriter, // legacy export compatibility only
             systemReader, systemWriter,
             interactionWriter,
             eventLogReader
